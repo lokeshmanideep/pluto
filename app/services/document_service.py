@@ -2,108 +2,19 @@ from typing import List, Dict, Any,Tuple
 import re
 import os
 import tempfile
-from langchain_openai import OpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import BaseOutputParser
-import json
 from ..schemas.document import PlaceholderType
 from docx import Document
 from docxtpl import DocxTemplate
-import time
-
-
-class PlaceholderExtractionParser(BaseOutputParser):
-    """Custom parser for extracting structured placeholder information."""
-    
-    def parse(self, text: str) -> List[Dict[str, Any]]:
-        """Parse the LLM output into structured placeholder data."""
-        try:
-            # Try to parse as JSON first
-            if text.strip().startswith('[') or text.strip().startswith('{'):
-                return json.loads(text)
-            
-            # Fallback: parse manually
-            placeholders = []
-            lines = text.split('\n')
-            current_placeholder = {}
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    if current_placeholder:
-                        placeholders.append(current_placeholder)
-                        current_placeholder = {}
-                    continue
-                
-                if line.startswith('Placeholder:'):
-                    current_placeholder['text'] = line.replace('Placeholder:', '').strip()
-                elif line.startswith('Type:'):
-                    current_placeholder['type'] = line.replace('Type:', '').strip().lower()
-                elif line.startswith('Description:'):
-                    current_placeholder['description'] = line.replace('Description:', '').strip()
-                elif line.startswith('Context:'):
-                    current_placeholder['context'] = line.replace('Context:', '').strip()
-            
-            if current_placeholder:
-                placeholders.append(current_placeholder)
-            
-            return placeholders
-        except Exception as e:
-            # If parsing fails, return empty list
-            return []
 
 
 class DocumentProcessingService:
     """Service for processing legal documents and extracting placeholders using docxtpl."""
     
     def __init__(self):
-        self.llm = OpenAI(
-            temperature=0.1,
-            openai_api_key=os.getenv("OPENAI_API_KEY")
-        )
-        self.placeholder_extraction_prompt = PromptTemplate(
-            input_variables=["document_text"],
-            template="""
-You are an expert legal document analyzer. Analyze the following legal document text and identify ALL placeholders, variables, and fields that need to be filled in.
-
-Document Text:
-{document_text}
-
-Please identify and extract all placeholders in the document. Look for:
-1. Text in brackets like [PLACEHOLDER], {{PLACEHOLDER}}, or (PLACEHOLDER)
-2. Underscores or blank spaces that indicate missing information
-3. Generic terms that should be replaced with specific information
-4. Template variables or merge fields
-
-For each placeholder found, provide:
-- The exact placeholder text as it appears
-- The type of information needed (name, date, amount, address, etc.)
-- A description of what should fill this placeholder
-- The surrounding context (a few words before and after)
-
-Return the results as a JSON array with this format:
-[
-  {{
-    "text": "exact placeholder text",
-    "type": "placeholder_type",
-    "description": "what information is needed",
-    "context": "surrounding text context"
-  }}
-]
-
-Focus on being comprehensive - it's better to identify too many potential placeholders than to miss important ones.
-"""
-        )
-        
-        self.placeholder_chain = self.placeholder_extraction_prompt | self.llm | PlaceholderExtractionParser()
+        pass
     
 
     def convert_custom_placeholders_to_jinja(self, docx_path: str):
-        """
-        Converts [Name] → {{ Name }} and ______ → {{ blank_1 }} using python-docx.
-        Fixes split runs first so placeholders spanning runs are detected properly.
-        Returns: (temp_docx_path, extracted_placeholders)
-        """
         temp_dir = tempfile.mkdtemp()
         temp_docx = os.path.join(temp_dir, "converted_template.docx")
 
@@ -124,7 +35,7 @@ Focus on being comprehensive - it's better to identify too many potential placeh
             def bracket_replacer(match):
                 placeholder_text = match.group(1).strip()
                 jinja_name = placeholder_text.replace(' ', '_').replace('-', '_')
-                context = full_text[max(0, match.start()-30):min(len(full_text), match.end()+30)]
+                context = full_text[max(0, match.start()-100):min(len(full_text), match.end()+100)]
                 extracted_placeholders.append({
                     'original': f"[{placeholder_text}]",
                     'jinja_name': jinja_name,
@@ -159,8 +70,13 @@ Focus on being comprehensive - it's better to identify too many potential placeh
                 para.runs[0].text = updated_text
                 for r in para.runs[1:]:
                     r.text = ""
-
-        # Save the updated docx
+        final_placeholders = []
+        done = set()
+        for ph in extracted_placeholders:
+            if ph['jinja_name'] not in done:
+                done.add(ph['jinja_name'])
+                final_placeholders.append(ph)
+        extracted_placeholders = final_placeholders
         document.save(temp_docx)
         return temp_docx, extracted_placeholders
     
@@ -238,77 +154,26 @@ Focus on being comprehensive - it's better to identify too many potential placeh
             
         except Exception as e:
             raise Exception(f"Error processing document: {str(e)}")
-    
-    def generate_completed_document(self, template_path: str, placeholders: List[Dict[str, Any]], output_path: str = None) -> str:
-        """Generate the completed document with all placeholders filled using docxtpl."""
-        try:
-            if not template_path or not os.path.exists(template_path):
-                raise Exception("Template path not found or invalid")
-            
-            # Prepare context for docxtpl
-            context = {}
-            
-            for placeholder in placeholders:
-                if placeholder.get('filled_value') and placeholder.get('jinja_name'):
-                    # Use jinja_name if available (from conversion)
-                    context[placeholder['jinja_name']] = placeholder['filled_value']
-                elif placeholder.get('filled_value') and placeholder.get('text'):
-                    # Convert placeholder text to valid jinja variable name
-                    jinja_name = self._text_to_jinja_name(placeholder['text'])
-                    context[jinja_name] = placeholder['filled_value']
-            
-            # Load template and render
-            doc = DocxTemplate(template_path)
-            doc.render(context)
-            
-            # Generate output path if not provided
-            if not output_path:
-                timestamp = int(time.time())
-                output_path = f"completed_document_{timestamp}.docx"
-            
-            # Save completed document
-            doc.save(output_path)
-            
-            return output_path
-            
-        except Exception as e:
-            raise Exception(f"Error generating completed document: {str(e)}")
+
     
     def _text_to_jinja_name(self, text: str) -> str:
         """Convert placeholder text to valid Jinja2 variable name."""
-        # Remove brackets and special characters
         clean_text = re.sub(r'[\[\]{}()<>]', '', text)
-        # Replace spaces and special chars with underscores
         clean_text = re.sub(r'[^a-zA-Z0-9_]', '_', clean_text)
-        # Remove multiple underscores
         clean_text = re.sub(r'_+', '_', clean_text)
-        # Remove leading/trailing underscores
         clean_text = clean_text.strip('_')
-        
         return clean_text if clean_text else 'placeholder'
     
     
     async def generate_completed_document(self, template_path: str, context: Dict[str, str], document_id: int) -> str:
         """Generate a completed document using docxtpl with the provided context."""
         try:
-            from docxtpl import DocxTemplate
-            
-            # Load the template
             doc = DocxTemplate(template_path)
-            
-            # Render the template with context
             doc.render(context)
-            
-            # Create output directory if it doesn't exist
             output_dir = "completed_documents"
             os.makedirs(output_dir, exist_ok=True)
-            
-            # Generate output file path
             output_path = os.path.join(output_dir, f"completed_document_{document_id}.docx")
-            
-            # Save the completed document
             doc.save(output_path)
-            
             return output_path
             
         except Exception as e:

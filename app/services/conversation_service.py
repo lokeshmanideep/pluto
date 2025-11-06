@@ -1,18 +1,18 @@
 from typing import Dict, Any, Optional, Tuple, List
 import os
 import re
-from langchain_openai import OpenAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.tools import tool
 from sqlalchemy.orm import Session
 from ..models.document import Document, Placeholder, Conversation
 from ..schemas.document import ConversationStatus, PlaceholderType
 
 
 class DatabaseChatMessageHistory(BaseChatMessageHistory):
-    """Custom chat message history that stores messages in database."""
     
     def __init__(self, conversation: Conversation, db: Session):
         self.conversation = conversation
@@ -21,7 +21,6 @@ class DatabaseChatMessageHistory(BaseChatMessageHistory):
         self._load_messages()
     
     def _load_messages(self):
-        """Load messages from database."""
         if self.conversation.conversation_history:
             chat_history = self.conversation.conversation_history.get("messages", [])
             for message in chat_history:
@@ -58,13 +57,69 @@ class DatabaseChatMessageHistory(BaseChatMessageHistory):
         self.db.commit()
 
 
+@tool
+def fill_placeholder_tool(placeholder_text: str, extracted_value: str, reasoning: str) -> str:
+    """
+    Call this function when you have successfully gathered complete information for a placeholder 
+    and are ready to fill it with a confirmed value.
+    
+    Args:
+        placeholder_text: The text of the placeholder being filled
+        extracted_value: The clean, validated value to fill the placeholder with
+        reasoning: Brief explanation of why this value is complete and correct
+    
+    Returns:
+        Confirmation that the placeholder will be filled
+    """
+    return f"FILL_PLACEHOLDER:{placeholder_text}|{extracted_value}|{reasoning}"
+
+
+@tool
+def request_more_info_tool(placeholder_text: str, question: str, examples: str = "") -> str:
+    """
+    Call this function when you need more information or clarification from the user 
+    before filling a placeholder.
+    
+    Args:
+        placeholder_text: The text of the placeholder being discussed
+        question: The specific question or request for clarification
+        examples: Optional examples to help the user understand what's needed
+    
+    Returns:
+        Indication that more information is needed
+    """
+    return f"REQUEST_INFO:{placeholder_text}|{question}|{examples}"
+
+
+@tool
+def complete_document_tool(message: str) -> str:
+    """
+    Call this function when all placeholders have been filled and the document is complete.
+    
+    Args:
+        message: Congratulatory message for the user
+    
+    Returns:
+        Confirmation that document is complete
+    """
+    return f"DOCUMENT_COMPLETE:{message}"
+
+
 class ConversationService:
     def __init__(self):
-        self.llm = OpenAI(
+        self.llm = ChatOpenAI(
             temperature=0.3,
             openai_api_key=os.getenv("OPENAI_API_KEY"),
-            model="gpt-4o-mini"
+            model="gpt-4o"
         )
+        
+        # Bind tools to the LLM
+        self.tools = [
+            fill_placeholder_tool,
+            request_more_info_tool, 
+            complete_document_tool
+        ]
+        self.llm_with_tools = self.llm.bind_tools(self.tools)
         
         # Create a chat prompt template with message history
         self.prompt = ChatPromptTemplate.from_messages([
@@ -72,26 +127,36 @@ class ConversationService:
 
 Document Context: {document_context}
 Current Placeholder: {current_placeholder}
+Progress: {progress_info}
 
-Your role is to:
-1. Help users understand what information is needed for each placeholder
-2. Ask clarifying questions if the information provided is unclear or incomplete
-3. Validate the information provided (format, completeness, etc.)
-4. Guide users through the document completion process step by step
-5. Be professional, helpful, and accurate
+Your role is to help users fill placeholders accurately through natural conversation. You have access to these tools:
+
+1. fill_placeholder_tool: Use when you have complete, validated information for a placeholder
+   - The system will automatically move to the next placeholder after filling
+   - You don't need to manually handle transitions
+
+2. request_more_info_tool: Use when you need clarification or more details from the user
+
+3. complete_document_tool: Use when all placeholders are filled
 
 Guidelines:
-- Ask one question at a time to avoid overwhelming the user
-- Provide examples when helpful
-- Validate information format (e.g., dates, phone numbers, emails)
-- If unsure about legal implications, suggest consulting with a legal professional
-- Keep responses concise but informative"""),
+- Ask follow-up questions when responses are incomplete or unclear
+- Validate information thoroughly before filling placeholders
+- Use examples to help users understand requirements
+- Only use fill_placeholder_tool when you're completely satisfied with the information
+- Be professional, helpful, and accurate for legal documents
+
+IMPORTANT: When you use fill_placeholder_tool, the system will automatically:
+1. Fill the current placeholder
+2. Move to the next unfilled placeholder
+3. Generate an introduction for the next field
+4. Combine both messages for a smooth user experience"""),
             MessagesPlaceholder(variable_name="history"),
             ("human", "{input}")
         ])
         
-        # Create the basic chain
-        self.chain = self.prompt | self.llm
+        # Create the basic chain with tools
+        self.chain = self.prompt | self.llm_with_tools
     
     def create_conversation_chain(self, conversation: Conversation, db: Session):
         """Create a conversation chain with message history."""
@@ -175,13 +240,22 @@ Guidelines:
         
         return True, ""
     
+    def _is_initial_message(self, message: str, conversation: Conversation) -> bool:
+        """Check if this is the initial trigger message from the frontend."""
+        if not conversation.conversation_history or not conversation.conversation_history.get("messages"):
+            return True
+        
+        trigger_phrases = ["start", "begin", "help me fill", "initial", "trigger"]
+        message_lower = message.lower().strip()
+        return any(phrase in message_lower for phrase in trigger_phrases) or len(message_lower) < 5
+
     async def process_user_message(
         self, 
         db: Session, 
         conversation_id: int, 
         user_message: str
     ) -> Tuple[str, Optional[Placeholder], Dict[str, Any]]:
-        """Process user message and return AI response."""
+        """Process user message using function calling for better efficiency."""
         
         # Get conversation and document
         conversation = db.query(Conversation).get(conversation_id)
@@ -218,54 +292,44 @@ Guidelines:
                 placeholder_context += f"\nDescription: {current_placeholder.description}"
             if current_placeholder.context:
                 placeholder_context += f"\nContext: {current_placeholder.context}"
+            placeholder_context += f"\nType: {current_placeholder.placeholder_type}"
         
-        # Try to extract value from user message
-        extracted_value = None
-        if current_placeholder:
-            # Simple extraction - in a real app, you might use more sophisticated NLP
-            extracted_value = user_message.strip()
-            
-            # Validate the extracted value
-            is_valid, validation_message = self.validate_placeholder_value(current_placeholder, extracted_value)
-            
-            if is_valid and extracted_value:
-                # Fill the placeholder
-                current_placeholder.filled_value = extracted_value
-                current_placeholder.is_filled = True
-                db.commit()
-                
-                # Move to next placeholder
-                next_placeholder = self.get_next_placeholder(db, document.id)
-                if next_placeholder:
-                    conversation.current_placeholder_id = next_placeholder.id
-                    current_placeholder = next_placeholder
-                else:
-                    conversation.current_placeholder_id = None
-                    conversation.status = ConversationStatus.COMPLETED
-                
-                db.commit()
+        # Calculate progress
+        total_placeholders = db.query(Placeholder).filter(Placeholder.document_id == document.id).count()
+        filled_placeholders = db.query(Placeholder).filter(
+            Placeholder.document_id == document.id,
+            Placeholder.is_filled == True
+        ).count()
         
-        # Generate AI response using LCEL with message history
+        progress_info = f"{filled_placeholders}/{total_placeholders} placeholders filled"
+        
+        # Check if initial message
+        is_initial = self._is_initial_message(user_message, conversation)
+        input_text = user_message
+        if is_initial and current_placeholder:
+            input_text = "I'm ready to help you fill out this document. Let's start with the first placeholder."
+        
         try:
+            # Single LLM call with function calling
             response = await chain_with_history.ainvoke(
                 {
-                    "input": user_message,
+                    "input": input_text,
                     "current_placeholder": placeholder_context,
-                    "document_context": document_context
+                    "document_context": document_context,
+                    "progress_info": progress_info
                 },
                 config={"configurable": {"session_id": conversation.session_id}}
             )
             
-            # Extract the content from the response
-            if hasattr(response, 'content'):
-                ai_response = response.content
-            else:
-                ai_response = str(response)
-                
+            # Process the response and tool calls
+            ai_response, current_placeholder = await self._process_tool_calls(
+                response, current_placeholder, document, conversation, db
+            )
+            
         except Exception as e:
             ai_response = f"I'm having trouble processing your request. Could you please try again? Error: {str(e)}"
         
-        # Calculate progress
+        # Recalculate progress after potential updates
         total_placeholders = db.query(Placeholder).filter(Placeholder.document_id == document.id).count()
         filled_placeholders = db.query(Placeholder).filter(
             Placeholder.document_id == document.id,
@@ -279,3 +343,145 @@ Guidelines:
         }
         
         return ai_response, current_placeholder, progress
+
+    async def _process_tool_calls(
+        self, 
+        response, 
+        current_placeholder: Optional[Placeholder], 
+        document: Document,
+        conversation: Conversation, 
+        db: Session
+    ) -> Tuple[str, Optional[Placeholder]]:
+        """Process the LLM response and handle any tool calls."""
+        
+        # Extract text response
+        if hasattr(response, 'content'):
+            ai_response = response.content
+        else:
+            ai_response = str(response)
+        
+        # Check for tool calls
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                
+                if tool_name == "fill_placeholder_tool":
+                    # Fill the current placeholder
+                    extracted_value = tool_args.get("extracted_value", "")
+                    reasoning = tool_args.get("reasoning", "")
+                    
+                    if current_placeholder and extracted_value:
+                        # Validate the value
+                        is_valid, validation_message = self.validate_placeholder_value(current_placeholder, extracted_value)
+                        
+                        if is_valid:
+                            # Fill the current placeholder
+                            filled_placeholder_name = current_placeholder.placeholder_text
+                            current_placeholder.filled_value = extracted_value
+                            current_placeholder.is_filled = True
+                            db.commit()
+                            
+                            # Create confirmation message
+                            confirmation_msg = f"✅ Perfect! I've filled '{filled_placeholder_name}' with: {extracted_value}"
+                            
+                            # Move to next placeholder
+                            next_placeholder = self.get_next_placeholder(db, document.id)
+                            
+                            if next_placeholder:
+                                # Update conversation to point to next placeholder
+                                conversation.current_placeholder_id = next_placeholder.id
+                                current_placeholder = next_placeholder
+                                db.commit()
+                                
+                                # Get the question for the next placeholder from LLM
+                                next_question = await self._introduce_next_placeholder(
+                                    conversation, next_placeholder, document, db
+                                )
+                                
+                                # Combine both responses
+                                ai_response = f"{confirmation_msg}\n\n{next_question}"
+                                
+                            else:
+                                # No more placeholders - document is complete
+                                conversation.current_placeholder_id = None
+                                conversation.status = ConversationStatus.COMPLETED
+                                current_placeholder = None
+                                ai_response = f"{confirmation_msg}\n\n🎉 Congratulations! All placeholders have been filled. Your document is now complete and ready for download!"
+                                db.commit()
+                        else:
+                            ai_response = f"❌ Validation failed: {validation_message}. Please provide a valid value."
+                
+                elif tool_name == "complete_document_tool":
+                    # Document completion
+                    completion_message = tool_args.get("message", "")
+                    conversation.current_placeholder_id = None
+                    conversation.status = ConversationStatus.COMPLETED
+                    current_placeholder = None
+                    ai_response = completion_message + "\n\n🎉 Your document is now complete and ready for download!"
+                    db.commit()
+                
+                elif tool_name == "request_more_info_tool":
+                    # Just use the response as-is, no database changes needed
+                    question = tool_args.get("question", "")
+                    examples = tool_args.get("examples", "")
+                    if examples:
+                        ai_response = f"{question}\n\nFor example: {examples}"
+                    else:
+                        ai_response = question
+        
+        return ai_response, current_placeholder
+    
+    async def _introduce_next_placeholder(
+        self,
+        conversation: Conversation,
+        next_placeholder: Placeholder,
+        document: Document,
+        db: Session
+    ) -> str:
+        """Trigger LLM to introduce the next placeholder after filling the previous one."""
+        
+        # Create conversation chain with history
+        chain_with_history = self.create_conversation_chain(conversation, db)
+        
+        # Prepare context for next placeholder
+        document_context = f"Document: {document.original_filename}"
+        if document.content_text:
+            document_context += f"\n\nContent preview: {document.content_text[:500]}..."
+        
+        placeholder_context = f"Placeholder: {next_placeholder.placeholder_text}"
+        if next_placeholder.description:
+            placeholder_context += f"\nDescription: {next_placeholder.description}"
+        if next_placeholder.context:
+            placeholder_context += f"\nContext: {next_placeholder.context}"
+        placeholder_context += f"\nType: {next_placeholder.placeholder_type}"
+        
+        # Calculate updated progress
+        total_placeholders = db.query(Placeholder).filter(Placeholder.document_id == document.id).count()
+        filled_placeholders = db.query(Placeholder).filter(
+            Placeholder.document_id == document.id,
+            Placeholder.is_filled == True
+        ).count()
+        
+        progress_info = f"{filled_placeholders}/{total_placeholders} placeholders filled"
+        
+        try:
+            # Trigger LLM to introduce next placeholder
+            response = await chain_with_history.ainvoke(
+                {
+                    "input": "The previous placeholder has been filled successfully. Please introduce the next placeholder and ask for the required information.",
+                    "current_placeholder": placeholder_context,
+                    "document_context": document_context,
+                    "progress_info": progress_info
+                },
+                config={"configurable": {"session_id": conversation.session_id}}
+            )
+            
+            # Extract the introduction response
+            if hasattr(response, 'content'):
+                return response.content
+            else:
+                return str(response)
+                
+        except Exception as e:
+            return f"Now I need information for: {next_placeholder.placeholder_text}. Could you please provide this information?"

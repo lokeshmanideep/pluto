@@ -215,7 +215,6 @@ async def chat_with_document(
         document_id=document_id, 
         session_id=session_id
     )
-    
     try:
         # Process user message
         ai_response, current_placeholder, progress = await conversation_service.process_user_message(
