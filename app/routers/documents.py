@@ -5,7 +5,7 @@ from typing import List
 import os
 import uuid
 import shutil
-
+from ..schemas.document import DocumentUpdate, DocumentStatus
 from ..database import get_db
 from ..schemas.document import (
     DocumentResponse, DocumentSummary, PlaceholderResponse, 
@@ -31,13 +31,12 @@ async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Upload a legal document for processing."""
     
     # Validate file type
-    if not file.filename.lower().endswith(('.docx', '.doc', '.txt')):
+    if not file.filename.lower().endswith(('.docx')):
         raise HTTPException(
             status_code=400, 
-            detail="Only .docx, .doc, and .txt files are supported"
+            detail="Only .docx are supported"
         )
     
     # Generate unique filename
@@ -79,9 +78,7 @@ async def process_document(
     document_id: int,
     db: Session = Depends(get_db)
 ):
-    """Process a document to extract placeholders."""
-    
-    # Get document
+
     document = DocumentCRUD.get(db, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -90,14 +87,11 @@ async def process_document(
         raise HTTPException(status_code=400, detail="Document has already been processed")
     
     try:
-        # Update status to processing
-        from ..schemas.document import DocumentUpdate, DocumentStatus
+       
         DocumentCRUD.update(db, document_id, DocumentUpdate(status=DocumentStatus.PROCESSING))
         
-        # Process document
         text_content, placeholders, template_path = await document_service.process_document(document.file_path)
-        
-        # Update document with extracted content and template path
+    
         DocumentCRUD.update(db, document_id, DocumentUpdate(
             content_text=text_content,
             template_text=text_content,
@@ -144,7 +138,6 @@ async def list_documents(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
-    """List all documents with summary information."""
     
     documents = DocumentCRUD.get_all(db, skip=skip, limit=limit)
     
@@ -170,7 +163,6 @@ async def get_document(
     document_id: int,
     db: Session = Depends(get_db)
 ):
-    """Get a specific document with all details."""
     
     document = DocumentCRUD.get(db, document_id)
     if not document:
@@ -185,8 +177,7 @@ async def get_document_placeholders(
     unfilled_only: bool = False,
     db: Session = Depends(get_db)
 ):
-    """Get placeholders for a document."""
-    
+  
     document = DocumentCRUD.get(db, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -205,9 +196,7 @@ async def chat_with_document(
     chat_message: ChatMessage,
     db: Session = Depends(get_db)
 ):
-    """Chat with the assistant to fill document placeholders."""
     
-    # Get or create conversation
     session_id = chat_message.session_id or str(uuid.uuid4())
     
     conversation = conversation_service.get_or_create_conversation(
@@ -216,7 +205,6 @@ async def chat_with_document(
         session_id=session_id
     )
     try:
-        # Process user message
         ai_response, current_placeholder, progress = await conversation_service.process_user_message(
             db=db,
             conversation_id=conversation.id,
@@ -241,7 +229,6 @@ async def complete_document(
     document_id: int,
     db: Session = Depends(get_db)
 ):
-    """Generate the completed document with all placeholders filled."""
     
     document = DocumentCRUD.get(db, document_id)
     if not document:
@@ -261,13 +248,10 @@ async def complete_document(
         )
     
     try:
-        # Prepare context data for template rendering
         context = {}
         for placeholder in placeholders:
             if placeholder.jinja_name and placeholder.filled_value:
                 context[placeholder.jinja_name] = placeholder.filled_value
-        
-        # Generate completed document using docxtpl
         completed_file_path = await document_service.generate_completed_document(
             document.template_path,
             context,

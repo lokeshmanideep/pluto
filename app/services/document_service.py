@@ -63,9 +63,6 @@ class DocumentProcessingService:
                 return tag
 
             updated_text = blank_pattern.sub(blank_replacer, updated_text)
-
-            # ---- 4️⃣ Assign updated text back to runs ----
-            # We assign the full paragraph text to the first run, and clear others.
             if para.runs:
                 para.runs[0].text = updated_text
                 for r in para.runs[1:]:
@@ -76,11 +73,10 @@ class DocumentProcessingService:
             if ph['jinja_name'] not in done:
                 done.add(ph['jinja_name'])
                 final_placeholders.append(ph)
-        extracted_placeholders = final_placeholders
         document.save(temp_docx)
-        return temp_docx, extracted_placeholders
-    
-    
+        return temp_docx, final_placeholders
+
+
     def extract_text_from_docx(self, file_path: str) -> str:
         """Extract text content from a DOCX file."""
         try:
