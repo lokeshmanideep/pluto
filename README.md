@@ -159,21 +159,16 @@ Once the server is running, you can access:
 
 ### Environment Variables
 
-| Variable           | Description                   | Default                     |
-| ------------------ | ----------------------------- | --------------------------- |
-| `DATABASE_URL`     | Database connection string    | `sqlite:///./legal_docs.db` |
-| `OPENAI_API_KEY`   | OpenAI API key for LangChain  | Required                    |
-| `MAX_FILE_SIZE_MB` | Maximum file size for uploads | 10                          |
-| `UPLOAD_DIRECTORY` | Directory for uploaded files  | `uploads`                   |
-| `SECRET_KEY`       | Secret key for JWT tokens     | Required                    |
+| Variable         | Description                  | Default                     |
+| ---------------- | ---------------------------- | --------------------------- |
+| `DATABASE_URL`   | Database connection string   | `sqlite:///./legal_docs.db` |
+| `OPENAI_API_KEY` | OpenAI API key for LangChain | Required                    |
 
 ### Database Support
 
 The application supports multiple databases:
 
 - **SQLite** (default): `sqlite:///./legal_docs.db`
-- **PostgreSQL**: `postgresql://user:password@localhost/dbname`
-- **MySQL**: `mysql://user:password@localhost/dbname`
 
 ## Development
 
