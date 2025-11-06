@@ -141,6 +141,7 @@ cython_debug/
 test*
 sample.xml
 *.docx
+.vscode/
 # PyCharm
 #  JetBrains specific template is maintainted in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/master/Global/JetBrains.gitignore
