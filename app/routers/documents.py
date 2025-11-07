@@ -23,7 +23,7 @@ document_service = DocumentProcessingService()
 conversation_service = ConversationService()
 
 # Create upload directory if it doesn't exist
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload", response_model=DocumentUploadResponse)

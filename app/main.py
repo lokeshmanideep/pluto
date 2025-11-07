@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import engine, Base
 from .routers import documents
-
+import os
 # Import models to ensure they're registered with Base.metadata
 
 # Create database tables
@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# os.makedirs("uploads", exist_ok=True)
+os.makedirs("/tmp/uploads", exist_ok=True)
 
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 

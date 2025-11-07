@@ -173,7 +173,7 @@ class DocumentProcessingService:
                 if key.startswith("blank_"):
                     context[key] = f"__{value}__"
             doc.render(context)
-            output_dir = "completed_documents"
+            output_dir = "/tmp/completed_documents"
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, f"completed_document_{document_id}.docx")
             doc.save(output_path)
