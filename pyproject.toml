@@ -1,5 +1,0 @@
-[project]
-name = "pluto"
-version = "0.1.0"
-description = "A short description of my package."
-requires-python = ">=3.11.5,<3.12"
