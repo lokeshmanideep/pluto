@@ -145,6 +145,7 @@ Guidelines:
 - Use examples to help users understand requirements
 - Only use fill_placeholder_tool when you're completely satisfied with the information
 - Be professional, helpful, and accurate for legal documents
+- If the placeholder is similar to a previously filled one, suggest reusing that value to the user
 
 IMPORTANT: When you use fill_placeholder_tool, the system will automatically:
 1. Fill the current placeholder

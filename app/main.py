@@ -22,19 +22,16 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify allowed origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Create uploads directory
 os.makedirs("uploads", exist_ok=True)
 
-# Mount static files for serving uploads
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Include routers
 app.include_router(documents.router, prefix="/api/v1")
 
 @app.get("/")
@@ -50,7 +47,6 @@ async def read_root():
 async def health_check():
     return {"status": "healthy", "service": "legal-document-api"}
 
-# Legacy endpoints (keeping for backward compatibility)
 @app.get("/items/{item_id}")
 async def read_item(item_id: int, q: str | None = None):
     return {"item_id": item_id, "q": q}
