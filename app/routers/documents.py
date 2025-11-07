@@ -290,7 +290,7 @@ async def download_completed_document(
         raise HTTPException(status_code=400, detail="Document is not completed yet")
     
     # Look for the completed document file
-    completed_file_path = f"completed_documents/completed_document_{document_id}.docx"
+    completed_file_path = f"/tmp/completed_documents/completed_document_{document_id}.docx"
     
     if not os.path.exists(completed_file_path):
         raise HTTPException(status_code=404, detail="Completed document file not found")
