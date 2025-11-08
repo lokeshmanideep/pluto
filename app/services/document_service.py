@@ -8,6 +8,7 @@ from docxtpl import DocxTemplate
 class DocumentProcessingService:
     
     def __init__(self):
+        self.full_document_text = ""
         pass
 
     def convert_custom_placeholders_to_jinja(self, docx_path: str) -> Tuple[str, List[Dict[str, Any]]]:
@@ -18,7 +19,7 @@ class DocumentProcessingService:
             document = Document(docx_path)
             extracted_placeholders = []
             placeholder_counter = 1
-            
+            self.full_document_text = "\n".join([para.text for para in document.paragraphs if para.text.strip()]) 
             # Process each paragraph
             for para in document.paragraphs:
                 if not para.text.strip():
@@ -104,7 +105,12 @@ class DocumentProcessingService:
     def _get_context(self, text: str, start: int, end: int, context_length: int = 100) -> str:
         context_start = max(0, start - context_length)
         context_end = min(len(text), end + context_length)
-        return text[context_start:context_end]
+        context = text[context_start:context_end]
+        if len(context) == len(text):
+            context_start = max(0, self.full_document_text.find(text) - context_length)
+            context_end = min(len(self.full_document_text), context_start + context_length * 2)
+            context = self.full_document_text[context_start:context_end]
+        return context
     
     def _replace_placeholders_in_paragraph(self, paragraph, replacements: List[Dict[str, str]]) -> None:
         if not replacements:
